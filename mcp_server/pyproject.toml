@@ -1,0 +1,15 @@
+[project]
+name = "diamond-options-mcp"
+version = "0.1.0"
+description = "MCP server for Diamond Options Engine"
+requires-python = ">=3.9"
+dependencies = [
+    "mcp[cli]>=1.0",
+    "yfinance>=0.2.66",
+    "numpy>=1.21",
+    "pandas>=1.5",
+    "scipy>=1.9",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+]
