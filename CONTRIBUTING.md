@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-git clone https://github.com/your-username/diamond_options_engine.git
+git clone https://github.com/pvc1997/diamond_options_engine.git
 cd diamond_options_engine
 uv sync --dev
 pre-commit install

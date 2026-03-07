@@ -16,7 +16,7 @@ Designed for natural language interaction through [Claude Code](https://claude.a
 - **Monte Carlo simulation** (10K GBM paths, VaR, CVaR, stress testing)
 - **Historical backtesting** with walk-forward entry and performance metrics
 - **Live OI analysis** via Kite Connect bridge
-- **Cross-engine integration** with [Diamond Stock Engine](https://github.com/your-username/diamond_stock_engine) for covered calls, protective puts, collars
+- **Cross-engine integration** with [Diamond Stock Engine](https://github.com/pvc1997/diamond_stock_engine) for covered calls, protective puts, collars
 - **Market event calendar** (RBI, earnings, budget, FOMC, holidays)
 - **Indian F&O cost model** (STT, brokerage, GST, exchange fees, SEBI, stamp duty)
 
