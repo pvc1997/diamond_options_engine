@@ -178,7 +178,7 @@ class TestEventAwareContext:
         assert "elevated" in ctx["iv_impact_note"].lower() or "IV likely" in ctx["iv_impact_note"]
 
     def test_iv_note_normal_on_quiet_day(self):
-        ctx = event_aware_context(from_date=date(2026, 3, 15))
+        ctx = event_aware_context(from_date=date(2026, 3, 5))
         assert "Normal IV environment" in ctx["iv_impact_note"]
 
     def test_pre_event_warning(self):

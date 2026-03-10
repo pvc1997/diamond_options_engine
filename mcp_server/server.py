@@ -3909,5 +3909,1443 @@ def earnings_calendar(symbol: str = "") -> dict:
     }
 
 
+# ═══════════════════════════════════════════════════════════════
+# FUTURES PRICING & ANALYTICS (Phase F2)
+# ═══════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def futures_fair_value(
+    spot: float,
+    days_to_expiry: int = 20,
+    risk_free_rate: float = 0.065,
+    dividend_yield: float = 0.012,
+) -> dict:
+    """Calculate theoretical futures fair value using cost-of-carry.
+
+    F = S × e^((r - q) × T)
+
+    Args:
+        spot: Current spot price.
+        days_to_expiry: Calendar DTE.
+        risk_free_rate: Annualized risk-free rate.
+        dividend_yield: Annualized dividend yield.
+
+    Returns:
+        Fair value, basis, and cost-of-carry breakdown.
+    """
+    from diamond_options.pricing.futures_pricing import (
+        theoretical_futures_price,
+        FuturesPricingResult,
+    )
+
+    T = days_to_expiry / 365.0
+    fair = theoretical_futures_price(spot, risk_free_rate, T, dividend_yield)
+    basis = fair - spot
+    basis_pct = (basis / spot * 100) if spot > 0 else 0
+    ann_basis = (basis_pct / days_to_expiry * 365) if days_to_expiry > 0 else 0
+
+    return {
+        "spot": spot,
+        "fair_value": round(fair, 2),
+        "basis": round(basis, 2),
+        "basis_pct": round(basis_pct, 3),
+        "annualized_basis": round(ann_basis, 2),
+        "days_to_expiry": days_to_expiry,
+        "risk_free_rate": risk_free_rate,
+        "dividend_yield": dividend_yield,
+        "cost_of_carry": round(risk_free_rate - dividend_yield, 4),
+    }
+
+
+@mcp.tool()
+def basis_analysis(
+    spot: float,
+    futures_price: float,
+    days_to_expiry: int = 20,
+    risk_free_rate: float = 0.065,
+    dividend_yield: float = 0.012,
+    historical_basis: list[float] | None = None,
+    next_futures: float = 0.0,
+    next_dte: int = 0,
+) -> dict:
+    """Analyze futures basis — premium/discount, fair value deviation, trade signals.
+
+    Args:
+        spot: Current spot price.
+        futures_price: Current near-month futures price.
+        days_to_expiry: Near-month DTE.
+        risk_free_rate: Risk-free rate.
+        dividend_yield: Dividend yield.
+        historical_basis: List of historical basis values for z-score.
+        next_futures: Next-month futures price (for roll yield).
+        next_dte: Next-month DTE.
+
+    Returns:
+        Full basis analysis with z-score, percentile, trade signal, roll yield.
+    """
+    from diamond_options.pricing.basis_analysis import analyze_basis
+    from dataclasses import asdict
+
+    result = analyze_basis(
+        futures_price=futures_price,
+        spot_price=spot,
+        days_to_expiry=days_to_expiry,
+        basis_history=historical_basis,
+        next_month_price=next_futures if next_futures > 0 else None,
+        next_month_days=next_dte if next_dte > 0 else None,
+    )
+
+    return asdict(result)
+
+
+@mcp.tool()
+def futures_mispricing_tool(
+    spot: float,
+    futures_price: float,
+    days_to_expiry: int = 20,
+    risk_free_rate: float = 0.065,
+    dividend_yield: float = 0.012,
+) -> dict:
+    """Detect futures mispricing vs. theoretical fair value.
+
+    Positive mispricing = futures rich (sell signal).
+    Negative mispricing = futures cheap (buy signal).
+
+    Args:
+        spot: Current spot price.
+        futures_price: Current futures price.
+        days_to_expiry: Calendar DTE.
+        risk_free_rate: Risk-free rate.
+        dividend_yield: Dividend yield.
+
+    Returns:
+        Mispricing amount, percentage, and trade signal.
+    """
+    from diamond_options.pricing.futures_pricing import futures_mispricing
+
+    T = days_to_expiry / 365.0
+    result = futures_mispricing(spot, futures_price, risk_free_rate, T, dividend_yield)
+
+    if result.is_overpriced and abs(result.mispricing_pct) > 0.3:
+        signal = "rich — consider selling or cash-futures arbitrage"
+    elif result.is_underpriced and abs(result.mispricing_pct) > 0.3:
+        signal = "cheap — consider buying"
+    else:
+        signal = "fairly priced"
+
+    return {
+        "spot": spot,
+        "futures_price": futures_price,
+        "fair_value": round(result.fair_value, 2),
+        "mispricing": round(result.mispricing, 2),
+        "mispricing_pct": round(result.mispricing_pct, 3),
+        "signal": signal,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUTURES COSTS & P&L (Phase F1-F2)
+# ═══════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def futures_pnl_calculator(
+    entry_price: float,
+    exit_price: float,
+    lots: int = 1,
+    lot_size: int = 65,
+    action: str = "BUY",
+) -> dict:
+    """Calculate futures P&L with full cost breakdown.
+
+    Includes brokerage, STT, exchange fees, GST, stamp duty.
+
+    Args:
+        entry_price: Entry futures price.
+        exit_price: Exit futures price.
+        lots: Number of lots.
+        lot_size: Shares per lot.
+        action: BUY or SELL.
+
+    Returns:
+        Gross P&L, costs, net P&L, ROI, breakeven.
+    """
+    from diamond_options.data.costs import futures_pnl, futures_breakeven
+
+    result = futures_pnl(entry_price, exit_price, lots, lot_size, action.upper())
+    be = futures_breakeven(entry_price, lots, lot_size, action.upper())
+
+    return {
+        **result,
+        "breakeven": be,
+        "action": action.upper(),
+        "lots": lots,
+        "lot_size": lot_size,
+    }
+
+
+@mcp.tool()
+def futures_round_trip_cost_tool(
+    price: float,
+    lots: int = 1,
+    lot_size: int = 65,
+) -> dict:
+    """Calculate round-trip futures trading costs.
+
+    Args:
+        price: Futures price.
+        lots: Number of lots.
+        lot_size: Shares per lot.
+
+    Returns:
+        Total round-trip cost and breakeven points.
+    """
+    from diamond_options.data.costs import futures_round_trip_cost, futures_breakeven
+
+    cost = futures_round_trip_cost(price, lots, lot_size)
+    be_buy = futures_breakeven(price, lots, lot_size, "BUY")
+    be_sell = futures_breakeven(price, lots, lot_size, "SELL")
+
+    return {
+        "price": price,
+        "lots": lots,
+        "lot_size": lot_size,
+        "contract_value": round(price * lots * lot_size, 2),
+        "round_trip_cost": round(cost, 2),
+        "cost_as_pct": round(cost / (price * lots * lot_size) * 100, 4),
+        "breakeven_long": be_buy,
+        "breakeven_short": be_sell,
+    }
+
+
+@mcp.tool()
+def futures_margin_estimate(
+    symbol: str,
+    price: float,
+    lots: int = 1,
+) -> dict:
+    """Estimate futures margin requirement.
+
+    Args:
+        symbol: F&O symbol (NIFTY, RELIANCE, etc.).
+        price: Current futures price.
+        lots: Number of lots.
+
+    Returns:
+        Margin requirement, margin percentage, contract value.
+    """
+    from diamond_options.data.universe import (
+        get_futures_margin_pct,
+        get_futures_margin_estimate,
+        get_lot_size,
+        get_index_lot_size,
+    )
+
+    lot_size = get_lot_size(symbol.upper()) or get_index_lot_size(symbol.upper()) or 65
+    margin_pct = get_futures_margin_pct(symbol.upper())
+    margin = get_futures_margin_estimate(symbol.upper(), price, lots)
+    contract_value = price * lots * lot_size
+
+    return {
+        "symbol": symbol.upper(),
+        "price": price,
+        "lots": lots,
+        "lot_size": lot_size,
+        "contract_value": round(contract_value, 2),
+        "margin_pct": round(margin_pct * 100, 1),
+        "margin_required": round(margin, 2),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUTURES STRATEGY ENGINE (Phase F3)
+# ═══════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def list_futures_strategies(
+    category: str = "",
+    outlook: str = "",
+    risk_profile: str = "",
+) -> dict:
+    """List all available futures trading strategies.
+
+    Args:
+        category: Filter by category (directional, spread, arbitrage, hedge, hybrid).
+        outlook: Filter by outlook (bullish, bearish, neutral, carry).
+        risk_profile: Filter by risk (unlimited, defined, low_risk).
+
+    Returns:
+        List of futures strategies with specs.
+    """
+    from diamond_options.strategy.futures_strategies import (
+        list_futures_strategies as _list,
+        FuturesStrategyCategory,
+        FuturesOutlook,
+        FuturesRiskProfile,
+    )
+
+    cat = FuturesStrategyCategory(category) if category else None
+    out = FuturesOutlook(outlook) if outlook else None
+    risk = FuturesRiskProfile(risk_profile) if risk_profile else None
+
+    strategies = _list(category=cat, outlook=out, risk_profile=risk)
+
+    return {
+        "count": len(strategies),
+        "strategies": [
+            {
+                "name": s.name,
+                "slug": s.slug,
+                "category": s.category.value,
+                "outlook": s.outlook.value,
+                "risk_profile": s.risk_profile.value,
+                "num_legs": s.num_legs,
+                "margin_type": s.margin_type,
+                "description": s.description,
+            }
+            for s in strategies
+        ],
+    }
+
+
+@mcp.tool()
+def futures_strategy_details(strategy_slug: str) -> dict:
+    """Get detailed specs for a specific futures strategy.
+
+    Args:
+        strategy_slug: Strategy identifier (e.g., long_futures, calendar_spread_bull).
+
+    Returns:
+        Full strategy specification.
+    """
+    from diamond_options.strategy.futures_strategies import get_futures_strategy
+
+    s = get_futures_strategy(strategy_slug)
+    if s is None:
+        return {"error": f"Strategy '{strategy_slug}' not found"}
+
+    return {
+        "name": s.name,
+        "slug": s.slug,
+        "category": s.category.value,
+        "outlook": s.outlook.value,
+        "risk_profile": s.risk_profile.value,
+        "num_legs": s.num_legs,
+        "margin_type": s.margin_type,
+        "description": s.description,
+        "ideal_basis_regime": s.ideal_basis_regime,
+        "ideal_vix_regime": s.ideal_vix_regime,
+        "ideal_dte_range": list(s.ideal_dte_range),
+        "tags": s.tags,
+    }
+
+
+@mcp.tool()
+def scan_futures_signals(
+    spot: float,
+    near_futures: float,
+    vix: float,
+    realized_vol: float,
+    days_to_expiry: int = 20,
+    trend: str = "neutral",
+    oi_buildup: str = "neutral",
+    next_futures: float = 0.0,
+    rollover_pct: float = 0.0,
+    min_score: int = 35,
+    max_results: int = 5,
+    category: str = "",
+    defined_risk_only: bool = False,
+) -> dict:
+    """Scan all futures strategies against current market conditions.
+
+    Scores each strategy 0-100 based on trend, basis, VIX, OI buildup,
+    rollover, and DTE alignment. Returns ranked recommendations.
+
+    Args:
+        spot: Current spot price.
+        near_futures: Near-month futures price.
+        vix: India VIX value.
+        realized_vol: Recent realized volatility (annualized, decimal).
+        days_to_expiry: Near-month DTE.
+        trend: Market trend (strong_bullish, bullish, neutral, bearish, strong_bearish).
+        oi_buildup: OI signal (long_buildup, short_buildup, long_unwinding, short_covering, neutral).
+        next_futures: Next-month futures price.
+        rollover_pct: Rollover percentage (0-100).
+        min_score: Minimum score to include.
+        max_results: Max strategies to return.
+        category: Filter by category.
+        defined_risk_only: Only defined-risk strategies.
+
+    Returns:
+        Ranked futures strategy signals with scores and rationale.
+    """
+    from diamond_options.strategy.futures_scanner import (
+        FuturesMarketCondition,
+        TrendDirection,
+        OIBuildupSignal,
+        scan_futures_strategies,
+        FuturesStrategyCategory,
+    )
+
+    trend_map = {
+        "strong_bullish": TrendDirection.STRONG_BULLISH,
+        "bullish": TrendDirection.BULLISH,
+        "neutral": TrendDirection.NEUTRAL,
+        "bearish": TrendDirection.BEARISH,
+        "strong_bearish": TrendDirection.STRONG_BEARISH,
+    }
+    oi_map = {
+        "long_buildup": OIBuildupSignal.LONG_BUILDUP,
+        "short_buildup": OIBuildupSignal.SHORT_BUILDUP,
+        "long_unwinding": OIBuildupSignal.LONG_UNWINDING,
+        "short_covering": OIBuildupSignal.SHORT_COVERING,
+        "neutral": OIBuildupSignal.NEUTRAL,
+    }
+
+    basis_pct = ((near_futures - spot) / spot * 100) if spot > 0 else 0
+    ann_basis = (basis_pct / days_to_expiry * 365) if days_to_expiry > 0 else 0
+
+    condition = FuturesMarketCondition(
+        spot=spot,
+        near_futures=near_futures,
+        next_futures=next_futures,
+        basis_pct=basis_pct,
+        annualized_basis=ann_basis,
+        vix=vix,
+        trend=trend_map.get(trend, TrendDirection.NEUTRAL),
+        realized_vol=realized_vol,
+        days_to_expiry=days_to_expiry,
+        oi_buildup=oi_map.get(oi_buildup, OIBuildupSignal.NEUTRAL),
+        rollover_pct=rollover_pct,
+    )
+
+    cat = FuturesStrategyCategory(category) if category else None
+
+    signals = scan_futures_strategies(
+        condition,
+        min_score=min_score,
+        max_results=max_results,
+        category=cat,
+        defined_risk_only=defined_risk_only,
+    )
+
+    return {
+        "market": {
+            "spot": spot,
+            "near_futures": near_futures,
+            "basis_pct": round(basis_pct, 3),
+            "vix": vix,
+            "trend": trend,
+            "oi_buildup": oi_buildup,
+        },
+        "count": len(signals),
+        "signals": [
+            {
+                "strategy": s.strategy.name,
+                "slug": s.strategy.slug,
+                "category": s.strategy.category.value,
+                "score": s.score,
+                "confidence": s.confidence,
+                "outlook": s.strategy.outlook.value,
+                "risk_profile": s.strategy.risk_profile.value,
+                "reasons": s.reasons,
+            }
+            for s in signals
+        ],
+    }
+
+
+@mcp.tool()
+def suggest_futures_strategy(
+    spot: float,
+    near_futures: float,
+    vix: float,
+    realized_vol: float,
+    days_to_expiry: int = 20,
+    trend: str = "neutral",
+    oi_buildup: str = "neutral",
+    symbol: str = "NIFTY",
+    capital: float = 500000.0,
+    next_futures: float = 0.0,
+    defined_risk_only: bool = False,
+) -> dict:
+    """Get actionable futures trade recommendations with sizing and P&L targets.
+
+    Full pipeline: scan → score → size → costs → rank.
+
+    Args:
+        spot: Current spot price.
+        near_futures: Near-month futures price.
+        vix: India VIX.
+        realized_vol: Realized volatility (annualized, decimal).
+        days_to_expiry: Near-month DTE.
+        trend: Market trend.
+        oi_buildup: OI buildup signal.
+        symbol: Underlying symbol.
+        capital: Available trading capital.
+        next_futures: Next-month futures price.
+        defined_risk_only: Only defined-risk strategies.
+
+    Returns:
+        Ranked recommendations with entry, target, stop, lots, margin, costs.
+    """
+    from diamond_options.strategy.futures_recommender import quick_futures_recommendation
+
+    return {
+        "symbol": symbol.upper(),
+        "recommendations": quick_futures_recommendation(
+            spot=spot,
+            near_futures=near_futures,
+            vix=vix,
+            realized_vol=realized_vol,
+            days_to_expiry=days_to_expiry,
+            trend=trend,
+            oi_buildup=oi_buildup,
+            symbol=symbol.upper(),
+            capital=capital,
+            next_futures=next_futures,
+            defined_risk_only=defined_risk_only,
+        ),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# FUTURES RISK MANAGEMENT (Phase F4)
+# ═══════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def futures_portfolio_risk(
+    positions: list[dict],
+    capital: float = 500000.0,
+) -> dict:
+    """Analyze futures portfolio risk — exposure, margin, P&L, alerts.
+
+    Args:
+        positions: List of positions, each with:
+            symbol, action (BUY/SELL), lots, lot_size, entry_price,
+            current_price, spot_price, days_to_expiry.
+        capital: Total trading capital.
+
+    Returns:
+        Aggregate risk metrics, per-symbol breakdown, and alerts.
+    """
+    from diamond_options.risk.futures_risk import (
+        calculate_futures_position_risk,
+        aggregate_futures_risk,
+        futures_exposure_summary,
+    )
+
+    pos_risks = [
+        calculate_futures_position_risk(
+            symbol=p["symbol"],
+            action=p["action"],
+            lots=p["lots"],
+            lot_size=p.get("lot_size", 65),
+            entry_price=p["entry_price"],
+            current_price=p["current_price"],
+            spot_price=p.get("spot_price", p["current_price"]),
+            days_to_expiry=p.get("days_to_expiry", 20),
+            capital=capital,
+        )
+        for p in positions
+    ]
+
+    portfolio = aggregate_futures_risk(pos_risks, capital)
+    return futures_exposure_summary(portfolio, capital)
+
+
+@mcp.tool()
+def futures_adjustment_advisor(
+    symbol: str,
+    action: str,
+    lots: int,
+    lot_size: int,
+    entry_price: float,
+    current_price: float,
+    spot_price: float,
+    days_to_expiry: int,
+    stop_loss: float = 0.0,
+    target: float = 0.0,
+    capital: float = 500000.0,
+) -> dict:
+    """Get adjustment recommendations for a futures position.
+
+    Analyzes position health and suggests: roll, scale down, hedge,
+    convert to spread, close, add stop.
+
+    Args:
+        symbol: Underlying symbol.
+        action: BUY or SELL.
+        lots: Number of lots.
+        lot_size: Shares per lot.
+        entry_price: Entry futures price.
+        current_price: Current futures price.
+        spot_price: Current spot price.
+        days_to_expiry: Calendar DTE.
+        stop_loss: Stop loss price (0 = none).
+        target: Target price (0 = none).
+        capital: Total capital.
+
+    Returns:
+        Position status, adjustments ranked by priority, do-nothing risk.
+    """
+    from diamond_options.risk.futures_adjustments import analyze_futures_position
+
+    analysis = analyze_futures_position(
+        symbol=symbol.upper(),
+        action=action.upper(),
+        lots=lots,
+        lot_size=lot_size,
+        entry_price=entry_price,
+        current_price=current_price,
+        spot_price=spot_price,
+        days_to_expiry=days_to_expiry,
+        stop_loss=stop_loss,
+        target=target,
+        capital=capital,
+    )
+
+    return {
+        "position_status": analysis.position_status,
+        "trigger": analysis.trigger,
+        "do_nothing_risk": analysis.do_nothing_risk,
+        "adjustments": [
+            {
+                "type": a.type.value,
+                "urgency": a.urgency,
+                "description": a.description,
+                "action_steps": a.action_steps,
+                "estimated_cost": a.estimated_cost,
+                "risk_reduction": a.risk_reduction,
+                "trade_off": a.trade_off,
+            }
+            for a in analysis.adjustments
+        ],
+    }
+
+
+@mcp.tool()
+def futures_expiry_checklist_tool(
+    symbol: str,
+    action: str,
+    lots: int,
+    lot_size: int,
+    entry_price: float,
+    current_price: float,
+    spot_price: float,
+    days_to_expiry: int,
+) -> dict:
+    """Generate futures expiry-day action checklist.
+
+    Covers physical delivery (stocks), cash settlement (indices),
+    rollover decisions, basis convergence, and P&L status.
+
+    Args:
+        symbol: Underlying symbol.
+        action: BUY or SELL.
+        lots: Number of lots.
+        lot_size: Shares per lot.
+        entry_price: Entry price.
+        current_price: Current price.
+        spot_price: Current spot.
+        days_to_expiry: Calendar DTE.
+
+    Returns:
+        Checklist of action items.
+    """
+    from diamond_options.risk.futures_adjustments import futures_expiry_checklist
+
+    checklist = futures_expiry_checklist(
+        symbol=symbol.upper(),
+        action=action.upper(),
+        lots=lots,
+        lot_size=lot_size,
+        entry_price=entry_price,
+        current_price=current_price,
+        spot_price=spot_price,
+        days_to_expiry=days_to_expiry,
+    )
+
+    return {
+        "symbol": symbol.upper(),
+        "days_to_expiry": days_to_expiry,
+        "checklist": checklist,
+    }
+
+
+@mcp.tool()
+def futures_monte_carlo(
+    entry_price: float,
+    lots: int = 1,
+    lot_size: int = 65,
+    action: str = "BUY",
+    spot: float = 0.0,
+    days_to_expiry: int = 20,
+    volatility: float = 0.15,
+    stop_loss: float = 0.0,
+    target: float = 0.0,
+    margin: float = 0.0,
+    num_paths: int = 10000,
+) -> dict:
+    """Monte Carlo simulation for a futures position.
+
+    Simulates 10K price paths to estimate P&L distribution,
+    VaR, stop/target probability, and margin call risk.
+
+    Args:
+        entry_price: Futures entry price.
+        lots: Number of lots.
+        lot_size: Shares per lot.
+        action: BUY or SELL.
+        spot: Current spot (defaults to entry_price).
+        days_to_expiry: Time horizon in days.
+        volatility: Annualized volatility (decimal).
+        stop_loss: Stop loss price.
+        target: Target price.
+        margin: Margin deposited (for margin call probability).
+        num_paths: Simulation paths.
+
+    Returns:
+        Expected P&L, VaR, CVaR, probabilities, percentiles.
+    """
+    from diamond_options.risk.futures_monte_carlo import simulate_futures_position
+    from dataclasses import asdict
+
+    if spot <= 0:
+        spot = entry_price
+
+    result = simulate_futures_position(
+        entry_price=entry_price,
+        lots=lots,
+        lot_size=lot_size,
+        action=action.upper(),
+        spot=spot,
+        T=days_to_expiry / 365.0,
+        sigma=volatility,
+        stop_loss=stop_loss,
+        target=target,
+        margin=margin,
+        num_paths=num_paths,
+    )
+
+    return asdict(result)
+
+
+@mcp.tool()
+def futures_stress_test_tool(
+    entry_price: float,
+    lots: int = 1,
+    lot_size: int = 65,
+    action: str = "BUY",
+) -> dict:
+    """Stress test a futures position under 9 market scenarios.
+
+    Tests P&L from -10% crash to +10% melt-up.
+
+    Args:
+        entry_price: Futures entry price.
+        lots: Number of lots.
+        lot_size: Shares per lot.
+        action: BUY or SELL.
+
+    Returns:
+        P&L under each stress scenario.
+    """
+    from diamond_options.risk.futures_monte_carlo import futures_stress_test
+
+    return {
+        "action": action.upper(),
+        "lots": lots,
+        "lot_size": lot_size,
+        "scenarios": futures_stress_test(
+            entry_price=entry_price,
+            lots=lots,
+            lot_size=lot_size,
+            action=action.upper(),
+        ),
+    }
+
+
+@mcp.tool()
+def futures_multi_horizon(
+    entry_price: float,
+    lots: int = 1,
+    lot_size: int = 65,
+    action: str = "BUY",
+    spot: float = 0.0,
+    days_to_expiry: int = 20,
+    volatility: float = 0.15,
+) -> dict:
+    """Simulate futures P&L at multiple time horizons.
+
+    Shows how the P&L distribution evolves over time.
+
+    Args:
+        entry_price: Futures entry price.
+        lots: Number of lots.
+        lot_size: Shares per lot.
+        action: BUY or SELL.
+        spot: Current spot (defaults to entry_price).
+        days_to_expiry: Maximum time horizon.
+        volatility: Annualized volatility.
+
+    Returns:
+        P&L stats at 25%, 50%, 75%, and 100% of time horizon.
+    """
+    from diamond_options.risk.futures_monte_carlo import simulate_futures_multi_horizon
+
+    if spot <= 0:
+        spot = entry_price
+
+    return {
+        "horizons": simulate_futures_multi_horizon(
+            entry_price=entry_price,
+            lots=lots,
+            lot_size=lot_size,
+            action=action.upper(),
+            spot=spot,
+            T=days_to_expiry / 365.0,
+            sigma=volatility,
+        ),
+    }
+
+
+@mcp.tool()
+def backtest_futures(
+    strategy: str,
+    prices: list[float],
+    dates: list[str],
+    lot_size: int = 65,
+    lots: int = 1,
+    entry_interval: int = 7,
+    holding_period: int = 7,
+    stop_pct: float = 2.0,
+    target_pct: float = 3.0,
+    use_stops: bool = True,
+) -> dict:
+    """Backtest a futures strategy over historical prices.
+
+    Supported strategies: long_futures, short_futures, mean_reversion,
+    momentum, calendar_spread.
+
+    Args:
+        strategy: Strategy slug.
+        prices: Historical daily closing prices.
+        dates: Corresponding ISO date strings.
+        lot_size: Shares per lot.
+        lots: Lots per trade.
+        entry_interval: Days between entries.
+        holding_period: Days held per trade.
+        stop_pct: Stop loss as % move.
+        target_pct: Target as % move.
+        use_stops: Whether to use stop/target exits.
+
+    Returns:
+        Win rate, P&L, Sharpe, drawdown, profit factor, trade log.
+    """
+    from diamond_options.risk.futures_backtester import backtest_futures_strategy
+
+    result = backtest_futures_strategy(
+        strategy=strategy,
+        prices=prices,
+        dates=dates,
+        lot_size=lot_size,
+        lots=lots,
+        entry_interval=entry_interval,
+        holding_period=holding_period,
+        stop_pct=stop_pct,
+        target_pct=target_pct,
+        use_stops=use_stops,
+    )
+
+    return {
+        "strategy": result.strategy,
+        "total_trades": result.total_trades,
+        "winners": result.winners,
+        "losers": result.losers,
+        "win_rate": result.win_rate,
+        "avg_pnl": result.avg_pnl,
+        "total_pnl": result.total_pnl,
+        "total_costs": result.total_costs,
+        "max_win": result.max_win,
+        "max_loss": result.max_loss,
+        "profit_factor": result.profit_factor,
+        "max_drawdown": result.max_drawdown,
+        "sharpe_ratio": result.sharpe_ratio,
+        "expectancy": result.expectancy,
+        "trades": [
+            {
+                "entry_date": t.entry_date,
+                "exit_date": t.exit_date,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "action": t.action,
+                "gross_pnl": t.gross_pnl,
+                "net_pnl": t.net_pnl,
+                "costs": t.costs,
+                "won": t.won,
+            }
+            for t in result.trades[:20]
+        ],
+    }
+
+
+# ── Futures-Stock Integration (Phase F8) ──────────────────────────────
+
+
+@mcp.tool()
+def futures_hedge_stock(
+    symbol: str,
+    shares: int,
+    current_price: float,
+    futures_price: float = 0,
+    days_to_expiry: int = 20,
+) -> dict:
+    """Suggest stock futures hedge for an equity holding.
+
+    Args:
+        symbol: F&O symbol (e.g., "RELIANCE").
+        shares: Number of shares held.
+        current_price: Current stock price.
+        futures_price: Current futures price (0 = auto-estimate).
+        days_to_expiry: DTE for the futures contract.
+    """
+    from diamond_options.integration.stock_bridge import StockHolding
+    from diamond_options.integration.futures_overlay import suggest_stock_futures_hedge
+
+    holding = StockHolding(
+        ticker=f"{symbol}.NS",
+        fno_symbol=symbol.upper(),
+        shares=shares,
+        avg_price=current_price,
+        current_price=current_price,
+        market_value=shares * current_price,
+        unrealized_pnl=0,
+        unrealized_pnl_pct=0,
+        weight_pct=100,
+    )
+    result = suggest_stock_futures_hedge(
+        holding,
+        futures_price=futures_price if futures_price > 0 else None,
+        days_to_expiry=days_to_expiry,
+    )
+    if result is None:
+        return {"error": f"Not enough shares for 1 lot of {symbol}"}
+    return {
+        "symbol": result.fno_symbol,
+        "shares": result.shares,
+        "lots_hedged": result.lots_hedged,
+        "shares_hedged": result.shares_hedged,
+        "hedge_ratio": result.hedge_ratio,
+        "entry_price": result.entry_price,
+        "margin_required": result.margin_required,
+        "basis_cost": result.basis_cost,
+        "annualized_carry_cost_pct": result.annualized_carry_cost_pct,
+        "effectiveness_pct": result.effectiveness_pct,
+        "notes": result.notes,
+    }
+
+
+@mcp.tool()
+def futures_hedge_portfolio(
+    portfolio_value: float,
+    nifty_futures: float,
+    nifty_spot: float = 22500,
+    portfolio_beta: float = 1.0,
+    days_to_expiry: int = 20,
+    hedge_ratio: float = 1.0,
+) -> dict:
+    """Suggest index futures hedge for equity portfolio.
+
+    Args:
+        portfolio_value: Total equity portfolio value in INR.
+        nifty_futures: Current NIFTY futures price.
+        nifty_spot: Current NIFTY spot price.
+        portfolio_beta: Portfolio beta to NIFTY.
+        days_to_expiry: DTE for futures.
+        hedge_ratio: 1.0 = full hedge, 0.5 = half hedge.
+    """
+    from diamond_options.integration.stock_bridge import StockPortfolio
+    from diamond_options.integration.futures_overlay import suggest_index_futures_hedge
+
+    portfolio = StockPortfolio(
+        strategy="mcp", holdings=[], total_value=portfolio_value, cash=0,
+        nav=portfolio_value, num_stocks=0, fno_eligible=[],
+        fno_eligible_value=0, fno_eligible_pct=0,
+    )
+    result = suggest_index_futures_hedge(
+        portfolio, nifty_futures, nifty_spot, portfolio_beta,
+        days_to_expiry, hedge_ratio,
+    )
+    return {
+        "portfolio_value": result.portfolio_value,
+        "beta": result.beta,
+        "beta_adjusted_exposure": result.beta_adjusted_exposure,
+        "lots_full_hedge": result.lots_full_hedge,
+        "lots_partial_hedge": result.lots_partial_hedge,
+        "margin_full": result.margin_full,
+        "margin_partial": result.margin_partial,
+        "basis_cost": result.basis_cost,
+        "annualized_carry_cost_pct": result.annualized_carry_cost_pct,
+        "hedge_effectiveness": result.hedge_effectiveness,
+        "notes": result.notes,
+    }
+
+
+@mcp.tool()
+def compare_hedge_methods(
+    portfolio_value: float,
+    nifty_spot: float = 22500,
+    nifty_futures: float = 22600,
+    portfolio_beta: float = 1.0,
+    days_to_expiry: int = 30,
+    volatility: float = 0.13,
+) -> dict:
+    """Compare futures vs options hedging for equity portfolio.
+
+    Compares: short futures, protective put, bear spread, collar.
+
+    Args:
+        portfolio_value: Total equity value.
+        nifty_spot: NIFTY spot price.
+        nifty_futures: NIFTY futures price.
+        portfolio_beta: Portfolio beta.
+        days_to_expiry: Target hedge duration.
+        volatility: NIFTY IV estimate.
+    """
+    from diamond_options.integration.stock_bridge import StockPortfolio
+    from diamond_options.integration.futures_overlay import compare_hedge_methods as _compare
+
+    portfolio = StockPortfolio(
+        strategy="mcp", holdings=[], total_value=portfolio_value, cash=0,
+        nav=portfolio_value, num_stocks=0, fno_eligible=[],
+        fno_eligible_value=0, fno_eligible_pct=0,
+    )
+    result = _compare(
+        portfolio, nifty_spot, nifty_futures, portfolio_beta,
+        days_to_expiry, volatility,
+    )
+    return {
+        "portfolio_value": result.portfolio_value,
+        "recommended": result.recommended,
+        "rationale": result.rationale,
+        "methods": [
+            {
+                "name": m.name,
+                "method": m.method,
+                "cost": m.cost,
+                "annualized_cost_pct": m.annualized_cost_pct,
+                "max_protection_pct": m.max_protection_pct,
+                "margin_required": m.margin_required,
+                "complexity": m.complexity,
+                "rolling_cost_annual": m.rolling_cost_annual,
+                "pros": m.pros,
+                "cons": m.cons,
+            }
+            for m in result.methods
+        ],
+    }
+
+
+@mcp.tool()
+def futures_income_from_stocks(
+    portfolio_value: float,
+    holdings: list[dict],
+    days_to_expiry: int = 20,
+) -> dict:
+    """Calculate cash-futures arbitrage income from stock holdings.
+
+    For stocks in contango, selling futures while holding stock earns basis.
+
+    Args:
+        portfolio_value: Total portfolio value.
+        holdings: List of {symbol, shares, current_price, futures_price?}.
+        days_to_expiry: DTE for futures.
+    """
+    from diamond_options.integration.stock_bridge import StockHolding, StockPortfolio
+    from diamond_options.integration.futures_overlay import futures_income_from_holdings
+    from diamond_options.data.universe import is_fno_stock
+
+    stock_holdings = []
+    fno_eligible = []
+    premiums = {}
+
+    for h in holdings:
+        sym = h.get("symbol", "").upper()
+        shares = h.get("shares", 0)
+        price = h.get("current_price", 0)
+        fp = h.get("futures_price", 0)
+        if fp > 0:
+            premiums[sym] = fp
+
+        holding = StockHolding(
+            ticker=f"{sym}.NS", fno_symbol=sym, shares=shares,
+            avg_price=price, current_price=price,
+            market_value=shares * price, unrealized_pnl=0,
+            unrealized_pnl_pct=0, weight_pct=0,
+        )
+        stock_holdings.append(holding)
+        if is_fno_stock(sym):
+            fno_eligible.append(holding)
+
+    fno_value = sum(h.market_value for h in fno_eligible)
+    portfolio = StockPortfolio(
+        strategy="mcp", holdings=stock_holdings,
+        total_value=portfolio_value, cash=0, nav=portfolio_value,
+        num_stocks=len(stock_holdings), fno_eligible=fno_eligible,
+        fno_eligible_value=fno_value,
+        fno_eligible_pct=(fno_value / portfolio_value * 100) if portfolio_value > 0 else 0,
+    )
+    result = futures_income_from_holdings(
+        portfolio, days_to_expiry, premiums if premiums else None,
+    )
+    return {
+        "portfolio_value": result.portfolio_value,
+        "eligible_count": result.eligible_count,
+        "total_income": result.total_income,
+        "avg_annualized_yield_pct": result.avg_annualized_yield_pct,
+        "total_margin_required": result.total_margin_required,
+        "summary": result.summary,
+        "entries": [
+            {
+                "symbol": e.fno_symbol,
+                "shares": e.shares,
+                "lots": e.lots_available,
+                "spot": e.spot_price,
+                "futures": e.futures_price,
+                "basis": e.basis,
+                "annualized_yield_pct": e.annualized_yield_pct,
+                "income": e.total_income,
+                "margin": e.margin_required,
+                "risk": e.risk_level,
+            }
+            for e in result.entries
+        ],
+    }
+
+
+@mcp.tool()
+def futures_events(days_ahead: int = 30) -> dict:
+    """Get upcoming futures-specific events (expiry, rollover, delivery margin).
+
+    Args:
+        days_ahead: Number of days to look ahead.
+    """
+    from diamond_options.data.events import (
+        get_futures_events,
+        is_rollover_window,
+        days_to_futures_expiry,
+    )
+
+    events = get_futures_events(days_ahead=days_ahead)
+    return {
+        "events": [
+            {
+                "date": e.date.isoformat(),
+                "type": e.event_type,
+                "title": e.title,
+                "impact": e.impact,
+                "description": e.description,
+            }
+            for e in events
+        ],
+        "is_rollover_window": is_rollover_window(),
+        "days_to_next_expiry": days_to_futures_expiry(),
+        "count": len(events),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# UNIFIED PORTFOLIO (Phase U1)
+# ═══════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def unified_portfolio_status(
+    stock_holdings: list[dict] | None = None,
+    options_positions: list[dict] | None = None,
+    futures_positions: list[dict] | None = None,
+    options_cash: float = 0.0,
+    options_margin: float = 0.0,
+    futures_cash: float = 0.0,
+    futures_margin: float = 0.0,
+    capital: float = 500000.0,
+) -> dict:
+    """Full cross-product portfolio view: equity + options + futures.
+
+    Shows NAV, margin, P&L, risk level, hedge ratio, and positions
+    grouped by underlying symbol.
+
+    Args:
+        stock_holdings: Equity holdings [{symbol, shares, current_price,
+            avg_price, market_value, unrealized_pnl, fno_eligible}].
+        options_positions: Options [{symbol, strike, option_type, lots,
+            lot_size, avg_price, current_price, direction, delta, theta,
+            vega, margin}].
+        futures_positions: Futures [{symbol, lots, lot_size, avg_price,
+            current_price, direction, margin}].
+        options_cash: Options ledger cash.
+        options_margin: Options margin used.
+        futures_cash: Futures ledger cash.
+        futures_margin: Futures margin used.
+        capital: Total trading capital.
+
+    Returns:
+        Unified portfolio with NAV, margin, P&L, alerts, positions.
+    """
+    from diamond_options.risk.unified_portfolio import (
+        build_unified_portfolio,
+        unified_daily_summary,
+    )
+
+    portfolio = build_unified_portfolio(
+        stock_holdings=stock_holdings,
+        options_positions=options_positions,
+        futures_positions=futures_positions,
+        options_cash=options_cash,
+        options_margin=options_margin,
+        futures_cash=futures_cash,
+        futures_margin=futures_margin,
+        capital=capital,
+    )
+    return unified_daily_summary(portfolio, capital)
+
+
+@mcp.tool()
+def unified_exposure_analysis(
+    stock_holdings: list[dict] | None = None,
+    options_positions: list[dict] | None = None,
+    futures_positions: list[dict] | None = None,
+    options_cash: float = 0.0,
+    options_margin: float = 0.0,
+    futures_cash: float = 0.0,
+    futures_margin: float = 0.0,
+    capital: float = 500000.0,
+) -> dict:
+    """Per-symbol net exposure across equity, options, and futures.
+
+    Identifies hedged positions (e.g., long stock + short futures = neutral),
+    unhedged directional bets, and over-hedged symbols.
+
+    Args:
+        stock_holdings: Equity holdings.
+        options_positions: Options positions.
+        futures_positions: Futures positions.
+        options_cash: Options ledger cash.
+        options_margin: Options margin used.
+        futures_cash: Futures ledger cash.
+        futures_margin: Futures margin used.
+        capital: Total trading capital.
+
+    Returns:
+        Per-symbol exposure, hedge status, and P&L breakdown.
+    """
+    from diamond_options.risk.unified_portfolio import (
+        build_unified_portfolio,
+        unified_exposure_by_symbol,
+    )
+
+    portfolio = build_unified_portfolio(
+        stock_holdings=stock_holdings,
+        options_positions=options_positions,
+        futures_positions=futures_positions,
+        options_cash=options_cash,
+        options_margin=options_margin,
+        futures_cash=futures_cash,
+        futures_margin=futures_margin,
+        capital=capital,
+    )
+    exposure = unified_exposure_by_symbol(portfolio)
+    return {
+        "symbol_count": len(exposure),
+        "exposures": exposure,
+    }
+
+
+@mcp.tool()
+def unified_risk_dashboard(
+    stock_holdings: list[dict] | None = None,
+    options_positions: list[dict] | None = None,
+    futures_positions: list[dict] | None = None,
+    options_cash: float = 0.0,
+    options_margin: float = 0.0,
+    futures_cash: float = 0.0,
+    futures_margin: float = 0.0,
+    capital: float = 500000.0,
+) -> dict:
+    """Cross-product risk alerts, margin, and hedge effectiveness.
+
+    Checks margin utilization, concentration, hedge status, leverage,
+    and generates cross-product risk alerts.
+
+    Args:
+        stock_holdings: Equity holdings.
+        options_positions: Options positions.
+        futures_positions: Futures positions.
+        options_cash: Options ledger cash.
+        options_margin: Options margin used.
+        futures_cash: Futures ledger cash.
+        futures_margin: Futures margin used.
+        capital: Total trading capital.
+
+    Returns:
+        Risk level, alerts, margin breakdown, hedge ratio.
+    """
+    from diamond_options.risk.unified_portfolio import build_unified_portfolio
+
+    portfolio = build_unified_portfolio(
+        stock_holdings=stock_holdings,
+        options_positions=options_positions,
+        futures_positions=futures_positions,
+        options_cash=options_cash,
+        options_margin=options_margin,
+        futures_cash=futures_cash,
+        futures_margin=futures_margin,
+        capital=capital,
+    )
+
+    return {
+        "risk_level": portfolio.risk_level,
+        "margin": {
+            "total_used": portfolio.total_margin_used,
+            "utilization_pct": portfolio.margin_utilization_pct,
+            "options_margin": portfolio.options.margin_used,
+            "futures_margin": portfolio.futures.margin_used,
+            "available": round(capital - portfolio.total_margin_used, 2),
+        },
+        "exposure": {
+            "total_notional": portfolio.total_notional_exposure,
+            "net_directional": portfolio.net_directional_exposure,
+            "max_daily_risk": portfolio.max_daily_risk,
+        },
+        "hedge": {
+            "hedge_ratio": portfolio.hedge_ratio,
+            "equity_value": portfolio.equity.total_value,
+            "short_futures_notional": abs(
+                min(portfolio.futures.net_notional, 0)
+            ),
+        },
+        "theta": {
+            "daily_income": portfolio.daily_theta_income,
+            "weekly_income": round(portfolio.daily_theta_income * 5, 2),
+        },
+        "alerts": [
+            {"level": a.level, "category": a.category, "message": a.message}
+            for a in portfolio.alerts
+        ],
+        "alert_count": {
+            "critical": sum(1 for a in portfolio.alerts if a.level == "critical"),
+            "breach": sum(1 for a in portfolio.alerts if a.level == "breach"),
+            "warning": sum(1 for a in portfolio.alerts if a.level == "warning"),
+            "info": sum(1 for a in portfolio.alerts if a.level == "info"),
+        },
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# LIVE BASIS ANALYSIS (Phase F9)
+# ═══════════════════════════════════════════════════════════════
+
+
+@mcp.tool()
+def live_basis_check(
+    symbol: str,
+    spot_price: float,
+    futures_price: float,
+    days_to_expiry: int = 20,
+    risk_free_rate: float = 0.065,
+    dividend_yield: float = 0.0,
+) -> dict:
+    """Compute real-time basis analysis from spot and futures prices.
+
+    Shows basis, annualized carry cost, fair value, mispricing, and
+    whether the contract is rich, cheap, or fair.
+
+    Args:
+        symbol: F&O symbol (e.g., "NIFTY", "RELIANCE").
+        spot_price: Current spot/underlying price.
+        futures_price: Current futures LTP.
+        days_to_expiry: Days to futures expiry.
+        risk_free_rate: Annualized risk-free rate (default 6.5%).
+        dividend_yield: Annualized dividend yield (default 0%).
+
+    Returns:
+        Basis, annualized basis, fair value, mispricing, signal.
+    """
+    from diamond_options.pricing.live_basis import live_basis_from_kite
+    from dataclasses import asdict
+
+    result = live_basis_from_kite(
+        symbol, spot_price, futures_price, days_to_expiry,
+        risk_free_rate, dividend_yield,
+    )
+    return asdict(result)
+
+
+@mcp.tool()
+def live_basis_scan_tool(
+    quotes: list[dict],
+    risk_free_rate: float = 0.065,
+) -> dict:
+    """Scan multiple symbols for basis opportunities.
+
+    Batch analysis of spot-futures basis across multiple symbols.
+    Returns ranked results with rich/cheap signals first.
+
+    Args:
+        quotes: List of dicts with keys: symbol, spot_price, futures_price,
+            days_to_expiry, dividend_yield (optional).
+        risk_free_rate: Annualized risk-free rate.
+
+    Returns:
+        Ranked basis analysis results sorted by signal priority.
+    """
+    from diamond_options.pricing.live_basis import live_basis_scan
+    from dataclasses import asdict
+
+    results = live_basis_scan(quotes, risk_free_rate)
+    return {
+        "count": len(results),
+        "results": [asdict(r) for r in results],
+    }
+
+
+@mcp.tool()
+def live_rollover_check(
+    symbol: str,
+    near_price: float,
+    near_dte: int,
+    next_price: float,
+    next_dte: int,
+    spot_price: float = 0.0,
+) -> dict:
+    """Analyze rollover cost from near to next month futures contract.
+
+    Shows calendar spread, roll cost, annualized cost, and whether
+    to roll now, wait, or close.
+
+    Args:
+        symbol: F&O symbol.
+        near_price: Near-month futures price.
+        near_dte: Days to near-month expiry.
+        next_price: Next-month futures price.
+        next_dte: Days to next-month expiry.
+        spot_price: Current spot price (optional, for context).
+
+    Returns:
+        Calendar spread, roll cost, annualized cost, recommendation, rationale.
+    """
+    from diamond_options.pricing.live_basis import live_rollover_analysis
+    from dataclasses import asdict
+
+    result = live_rollover_analysis(
+        symbol, near_price, near_dte, next_price, next_dte, spot_price,
+    )
+    return asdict(result)
+
+
 if __name__ == "__main__":
     mcp.run()

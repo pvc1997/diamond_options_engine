@@ -56,6 +56,48 @@ class ExecutionSettings(BaseSettings):
     max_trades_per_session: int = Field(default=20, ge=1, le=100)
 
 
+class FuturesRiskSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="FUTURES_", env_file=_ENV_FILE, extra="ignore")
+
+    max_notional_pct: float = Field(
+        default=0.60, ge=0.1, le=1.0,
+        description="Max total notional as fraction of capital (e.g., 0.60 = 60%)",
+    )
+    max_margin_utilization: float = Field(
+        default=0.60, ge=0.1, le=1.0,
+        description="Max margin utilization (e.g., 0.60 = 60% of capital in margin)",
+    )
+    max_concentration_pct: float = Field(
+        default=0.40, ge=0.1, le=1.0,
+        description="Max notional in a single symbol as fraction of total (e.g., 0.40 = 40%)",
+    )
+    max_open_positions: int = Field(default=5, ge=1, le=20)
+    stop_loss_pct: float = Field(
+        default=3.0, ge=0.5, le=20.0,
+        description="Default stop loss as % of entry price",
+    )
+    rollover_warning_days: int = Field(
+        default=5, ge=1, le=15,
+        description="Days before expiry to warn about rollover",
+    )
+    basis_alert_z_score: float = Field(
+        default=2.0, ge=1.0, le=4.0,
+        description="Basis z-score threshold for rich/cheap alert",
+    )
+    basis_rich_annualized_pct: float = Field(
+        default=8.0, ge=2.0, le=20.0,
+        description="Annualized basis % above which futures are considered rich",
+    )
+    basis_cheap_annualized_pct: float = Field(
+        default=4.0, ge=0.5, le=10.0,
+        description="Annualized basis % below which futures are considered cheap",
+    )
+    delivery_margin_buffer_days: int = Field(
+        default=4, ge=1, le=10,
+        description="Days before expiry to warn about delivery margin (stock futures)",
+    )
+
+
 class KiteSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="KITE_", env_file=_ENV_FILE, extra="ignore")
 
@@ -75,6 +117,7 @@ class Config(BaseSettings):
 
     cache: CacheSettings = Field(default_factory=CacheSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
+    futures_risk: FuturesRiskSettings = Field(default_factory=FuturesRiskSettings)
     market: MarketSettings = Field(default_factory=MarketSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     kite: KiteSettings = Field(default_factory=KiteSettings)

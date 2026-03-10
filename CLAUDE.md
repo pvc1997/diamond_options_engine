@@ -41,6 +41,7 @@ src/diamond_options/
     adjustments.py    — Roll/widen/close/hedge advisor, expiry checklist
     monte_carlo.py    — GBM simulation, VaR, CVaR, stress testing
     backtester.py     — Historical strategy backtesting engine
+    unified_portfolio.py — Cross-product equity+options+futures risk view
   integration/
     stock_bridge.py   — Read equity holdings from diamond_stock_engine
     overlay.py        — Covered calls, protective puts, collars for stock holdings
@@ -49,11 +50,11 @@ src/diamond_options/
     indian_markets.py — NSE hours, holidays, trading day utilities
     formatters.py     — INR, Greek, IV display formatting
 mcp_server/
-  server.py           — FastMCP with 77 tools (Phase 1-6)
+  server.py           — FastMCP with 117 tools (Phase 1-8, F1-F9, U1)
 .claude/
-  commands/           — 28 slash commands (/suggest, /greeks, /hedge, /covered-call, etc.)
-  skills/             — 31 auto-triggering skills (strategy-selector, stock-overlay, etc.)
-  hooks/              — 7 market-aware hooks (expiry alerts, VIX checks, etc.)
+  commands/           — 40 slash commands (29 options + 10 futures + 1 unified)
+  skills/             — 40 auto-triggering skills (32 options + 7 futures + 1 unified)
+  hooks/              — 12 market-aware hooks (7 options + 5 futures)
 ```
 
 ### Key Conventions
@@ -68,20 +69,29 @@ mcp_server/
 
 ### Running Tests
 ```bash
-uv run pytest tests/ -x --tb=short -q    # All tests (436)
+uv run pytest tests/ -x --tb=short -q    # All tests (1020)
 uv run pytest tests/test_costs.py         # Specific module
 ```
 
 ### CLI Commands
 ```bash
+# Options
 uv run options status      # Portfolio status
 uv run options chain NIFTY # Options chain
 uv run options expiry      # Upcoming expiries
 uv run options universe    # F&O stocks
 uv run options costs 3250  # Cost calculator
+
+# Futures
+uv run options futures status                         # Futures portfolio
+uv run options futures chain NIFTY                    # Term structure
+uv run options futures basis NIFTY 22600 22500 -d 20  # Basis analysis
+uv run options futures costs 22500 -l 1 -s 65         # Cost calculator
+uv run options futures contracts                      # All contracts
+uv run options futures contracts NIFTY                # Specific contract
 ```
 
-### MCP Tools (89 tools — Phase 1-8)
+### MCP Tools (117 tools — Phase 1-8, F1-F9, U1)
 
 **Foundation (13):** `fno_universe`, `index_contracts`, `lot_size`, `search_fno`, `sector_fno_stocks`, `upcoming_expiries`, `is_expiry_today`, `next_monthly_expiry`, `options_chain_summary`, `option_chain_strikes`, `max_pain`, `market_status`, `is_trading_day`
 
@@ -121,14 +131,38 @@ uv run options costs 3250  # Cost calculator
 
 **Event Calendar (4):** `upcoming_market_events`, `event_context`, `events_for_symbol`, `earnings_calendar`
 
-### Slash Commands (28)
-`/status` `/chain` `/expiry` `/costs` `/universe` `/morning` `/suggest` `/greeks` `/iv` `/risk` `/adjust` `/backtest` `/simulate` `/compare` `/payoff` `/vix` `/vol` `/whatif` `/size` `/price` `/scan` `/stress` `/condor` `/straddle` `/history` `/hedge` `/covered-call` `/collar`
+**Futures Pricing (3):** `futures_fair_value`, `basis_analysis`, `futures_mispricing_tool`
 
-### Auto-Triggering Skills (31)
-`ticker-resolver` `amount-parser` `market-context` `cost-analyzer` `expiry-manager` `strategy-selector` `greeks-interpreter` `risk-monitor` `iv-regime` `position-sizer` `adjustment-trigger` `expiry-day-ops` `trade-validator` `vol-analyzer` `spread-builder` `theta-decay` `backtest-interpreter` `vix-regime-adapter` `cost-optimizer` `profit-taker` `loss-manager` `event-aware` `margin-calculator` `weekly-review` `moneyness-guide` `rollover-guide` `pnl-calculator` `portfolio-hedger` `multi-expiry` `trade-journal` `stock-overlay`
+**Futures Costs (3):** `futures_pnl_calculator`, `futures_round_trip_cost_tool`, `futures_margin_estimate`
 
-### Hooks (7)
-`pre-market-scan` `post-market-log` `expiry-alert` `vix-spike` `friday-review` `position-check` `monthly-expiry`
+**Futures Strategy (4):** `list_futures_strategies`, `futures_strategy_details`, `scan_futures_signals`, `suggest_futures_strategy`
+
+**Futures Risk (7):** `futures_portfolio_risk`, `futures_adjustment_advisor`, `futures_expiry_checklist_tool`, `futures_monte_carlo`, `futures_stress_test_tool`, `futures_multi_horizon`, `backtest_futures`
+
+**Futures Integration (5):** `futures_hedge_stock`, `futures_hedge_portfolio`, `compare_hedge_methods`, `futures_income_from_stocks`, `futures_events`
+
+**Live Basis (3):** `live_basis_check`, `live_basis_scan_tool`, `live_rollover_check`
+
+**Unified Portfolio (3):** `unified_portfolio_status`, `unified_exposure_analysis`, `unified_risk_dashboard`
+
+### Slash Commands (40)
+**Options (29):** `/status` `/chain` `/expiry` `/costs` `/universe` `/morning` `/suggest` `/greeks` `/iv` `/risk` `/adjust` `/backtest` `/simulate` `/compare` `/payoff` `/vix` `/vol` `/whatif` `/size` `/price` `/scan` `/stress` `/condor` `/straddle` `/history` `/hedge` `/covered-call` `/collar` `/report`
+
+**Futures (10):** `/futures-suggest` `/futures-scan` `/futures-risk` `/futures-adjust` `/futures-backtest` `/futures-basis` `/futures-costs` `/futures-simulate` `/futures-stress` `/futures-report`
+
+**Unified (1):** `/portfolio`
+
+### Auto-Triggering Skills (40)
+**Options (32):** `ticker-resolver` `amount-parser` `market-context` `cost-analyzer` `expiry-manager` `strategy-selector` `greeks-interpreter` `risk-monitor` `iv-regime` `position-sizer` `adjustment-trigger` `expiry-day-ops` `trade-validator` `vol-analyzer` `spread-builder` `theta-decay` `backtest-interpreter` `vix-regime-adapter` `cost-optimizer` `profit-taker` `loss-manager` `event-aware` `margin-calculator` `weekly-review` `moneyness-guide` `rollover-guide` `pnl-calculator` `portfolio-hedger` `multi-expiry` `trade-journal` `stock-overlay` `daily-report`
+
+**Futures (7):** `futures-strategy-selector` `futures-risk-monitor` `futures-basis-analyzer` `futures-rollover-guide` `futures-margin-monitor` `futures-pnl-tracker` `futures-daily-report`
+
+**Unified (1):** `unified-risk-monitor`
+
+### Hooks (12)
+**Options (7):** `pre-market-scan` `post-market-log` `expiry-alert` `vix-spike` `friday-review` `position-check` `monthly-expiry`
+
+**Futures (5):** `futures-rollover-alert` `futures-basis-alert` `futures-delivery-warning` `futures-margin-check` `futures-monthly-expiry`
 
 ### Indian Options Cost Rules
 - **STT:** 0.0625% on SELL side only (options buy = 0 STT)

@@ -190,3 +190,113 @@ def search_symbol(query: str) -> list[FnOStock]:
     """Fuzzy search for F&O stocks by symbol prefix."""
     q = query.upper()
     return [s for s in FNO_STOCKS if s.symbol.startswith(q)]
+
+
+# --- Futures margin groups ---
+# NSE classifies stocks into margin groups based on volatility.
+# Group I (liquid, low vol): ~15% SPAN margin
+# Group II (medium vol): ~20-25% SPAN margin
+# Group III (high vol): ~30-40% SPAN margin
+# Indices get lower margins (~10-12%).
+
+FUTURES_MARGIN_PCT: dict[str, float] = {
+    # Indices — lower margin
+    "NIFTY": 0.10,
+    "BANKNIFTY": 0.11,
+    "FINNIFTY": 0.11,
+    "MIDCPNIFTY": 0.13,
+    # Group I — high liquidity, lower vol
+    "RELIANCE": 0.15,
+    "TCS": 0.15,
+    "HDFCBANK": 0.15,
+    "INFY": 0.15,
+    "ICICIBANK": 0.15,
+    "SBIN": 0.17,
+    "BHARTIARTL": 0.17,
+    "ITC": 0.15,
+    "KOTAKBANK": 0.15,
+    "LT": 0.17,
+    "AXISBANK": 0.17,
+    "BAJFINANCE": 0.20,
+    "MARUTI": 0.17,
+    "SUNPHARMA": 0.17,
+    "TATAMOTORS": 0.20,
+    "HCLTECH": 0.15,
+    "WIPRO": 0.17,
+    "HINDUNILVR": 0.15,
+    # Group II — medium vol
+    "ADANIENT": 0.25,
+    "NTPC": 0.17,
+    "TATASTEEL": 0.20,
+    "POWERGRID": 0.17,
+    "ONGC": 0.20,
+    "JSWSTEEL": 0.20,
+    "M&M": 0.17,
+    "HINDALCO": 0.20,
+    "COALINDIA": 0.20,
+    "DRREDDY": 0.17,
+    "CIPLA": 0.17,
+    "BAJAJFINSV": 0.20,
+    "DIVISLAB": 0.20,
+    "TITAN": 0.20,
+    "TRENT": 0.22,
+    "HAL": 0.22,
+    "BEL": 0.20,
+    "TATAPOWER": 0.22,
+    "DLF": 0.22,
+    "INDIGO": 0.20,
+    # Group III — higher vol
+    "VEDL": 0.25,
+    "JINDALSTEL": 0.25,
+    "BANKBARODA": 0.22,
+    "PNB": 0.25,
+    "DIXON": 0.28,
+    "GODREJPROP": 0.25,
+    "POLYCAB": 0.25,
+    "MRF": 0.20,
+    "PAGEIND": 0.25,
+}
+
+# Default margin for symbols not in the map
+_DEFAULT_FUTURES_MARGIN_PCT = 0.20
+
+
+def get_futures_margin_pct(symbol: str) -> float:
+    """Return approximate SPAN margin % for a futures contract.
+
+    Args:
+        symbol: NSE symbol (e.g., "NIFTY", "RELIANCE").
+
+    Returns:
+        Margin percentage (e.g., 0.15 for 15%).
+    """
+    return FUTURES_MARGIN_PCT.get(symbol.upper(), _DEFAULT_FUTURES_MARGIN_PCT)
+
+
+def get_futures_margin_estimate(
+    symbol: str,
+    price: float,
+    lots: int,
+    lot_size: int | None = None,
+) -> float:
+    """Estimate SPAN margin for a futures position.
+
+    Args:
+        symbol: NSE symbol.
+        price: Futures price per unit.
+        lots: Number of lots.
+        lot_size: Lot size (auto-looked up if not provided).
+
+    Returns:
+        Estimated margin requirement in ₹.
+    """
+    if lot_size is None:
+        lot_size = get_lot_size(symbol)
+        if lot_size == 0:
+            lot_size = get_index_lot_size(symbol)
+    if lot_size == 0:
+        return 0.0
+
+    notional = price * abs(lots) * lot_size
+    margin_pct = get_futures_margin_pct(symbol)
+    return round(notional * margin_pct, 2)

@@ -16,7 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from diamond_options.data.kite_bridge import parse_kite_symbol
+from diamond_options.data.futures_ledger import FuturesPosition, FuturesTrade
+from diamond_options.data.kite_bridge import parse_futures_symbol, parse_kite_symbol
 from diamond_options.data.ledger import OptionTrade, Position
 from diamond_options.data.universe import get_index_lot_size, get_lot_size
 
@@ -352,3 +353,216 @@ def detect_spreads(positions: list[KitePosition]) -> dict[str, list[KitePosition
         groups[key].append(pos)
 
     return groups
+
+
+# --- Futures position parsing ---
+
+
+@dataclass
+class KiteFuturesPosition:
+    """A parsed Kite broker futures position."""
+
+    symbol: str  # Underlying (e.g., "NIFTY")
+    tradingsymbol: str  # Raw Kite symbol (e.g., "NIFTY26MARFUT")
+    exchange: str  # NFO, BFO, etc.
+    expiry_year: int
+    expiry_month: int
+    quantity: int  # Positive = long, negative = short
+    avg_price: float
+    ltp: float
+    pnl: float
+    m2m: float
+    product: str  # NRML, MIS, etc.
+    instrument_token: int
+
+    @property
+    def is_long(self) -> bool:
+        return self.quantity > 0
+
+    @property
+    def is_short(self) -> bool:
+        return self.quantity < 0
+
+    @property
+    def unrealized_pnl(self) -> float:
+        return (self.ltp - self.avg_price) * self.quantity
+
+    @property
+    def lot_size(self) -> int:
+        ls = get_lot_size(self.symbol)
+        if ls == 0:
+            ls = get_index_lot_size(self.symbol)
+        return ls
+
+    @property
+    def lots(self) -> int:
+        ls = self.lot_size
+        if ls > 0:
+            return self.quantity // ls
+        return self.quantity
+
+    @property
+    def notional_value(self) -> float:
+        return abs(self.ltp * self.quantity)
+
+
+def parse_kite_futures_position(raw: dict) -> KiteFuturesPosition | None:
+    """Parse a single Kite position dict into KiteFuturesPosition.
+
+    Args:
+        raw: A position dict from Kite get_positions response.
+
+    Returns:
+        KiteFuturesPosition if it's a futures position, None otherwise.
+    """
+    tradingsymbol = raw.get("tradingsymbol", "")
+    if not tradingsymbol:
+        return None
+
+    parsed = parse_futures_symbol(tradingsymbol)
+    if parsed is None:
+        return None
+
+    quantity = raw.get("quantity", 0)
+    if quantity == 0:
+        return None
+
+    return KiteFuturesPosition(
+        symbol=parsed["symbol"],
+        tradingsymbol=tradingsymbol,
+        exchange=raw.get("exchange", "NFO"),
+        expiry_year=parsed["year"],
+        expiry_month=parsed["month"],
+        quantity=quantity,
+        avg_price=raw.get("average_price", 0.0),
+        ltp=raw.get("last_price", 0.0),
+        pnl=raw.get("pnl", 0.0),
+        m2m=raw.get("m2m", 0.0),
+        product=raw.get("product", "NRML"),
+        instrument_token=raw.get("instrument_token", 0),
+    )
+
+
+def kite_futures_position_to_trade(
+    pos: KiteFuturesPosition,
+    expiry: date | None = None,
+    strategy_tag: str = "kite_sync",
+    trade_group: str = "",
+    rationale: str = "Synced from Kite broker",
+) -> FuturesTrade:
+    """Convert a KiteFuturesPosition to a FuturesTrade for ledger recording.
+
+    Args:
+        pos: Parsed Kite futures position.
+        expiry: Expiry date. If None, uses last day of expiry_month.
+        strategy_tag: Strategy tag for the trade.
+        trade_group: Trade group identifier.
+        rationale: Rationale string.
+
+    Returns:
+        FuturesTrade ready for ledger recording.
+    """
+    action = "BUY" if pos.quantity > 0 else "SELL"
+
+    ls = pos.lot_size
+    if ls == 0:
+        ls = abs(pos.quantity)
+
+    lots = abs(pos.quantity) // ls if ls > 0 else 1
+
+    # Determine expiry date
+    if expiry is None:
+        # Use last day of the month as approximation
+        import calendar
+
+        _, last_day = calendar.monthrange(pos.expiry_year, pos.expiry_month)
+        expiry = date(pos.expiry_year, pos.expiry_month, last_day)
+
+    expiry_str = expiry.isoformat()
+
+    if not trade_group:
+        trade_group = f"kite_{pos.symbol}_{expiry_str}_{pos.product}"
+
+    return FuturesTrade(
+        timestamp=datetime.now().isoformat(),
+        action=action,
+        symbol=pos.symbol,
+        expiry=expiry_str,
+        lots=lots,
+        lot_size=ls,
+        price=pos.avg_price,
+        total_cost=0.0,
+        strategy_tag=strategy_tag,
+        trade_group=trade_group,
+        rationale=rationale,
+    )
+
+
+def compare_futures_positions(
+    kite_positions: list[KiteFuturesPosition],
+    ledger_positions: list[FuturesPosition],
+) -> dict:
+    """Compare Kite live futures positions with local ledger.
+
+    Args:
+        kite_positions: Parsed KiteFuturesPosition list.
+        ledger_positions: FuturesPosition list from FuturesLedger.get_positions().
+
+    Returns:
+        Dict with matched, kite_only, ledger_only, and summary.
+    """
+    kite_map: dict[str, KiteFuturesPosition] = {}
+    for kp in kite_positions:
+        key = f"{kp.symbol}_{kp.expiry_year}_{kp.expiry_month}"
+        kite_map[key] = kp
+
+    ledger_map: dict[str, FuturesPosition] = {}
+    for lp in ledger_positions:
+        try:
+            exp = date.fromisoformat(lp.expiry)
+            key = f"{lp.symbol}_{exp.year}_{exp.month}"
+        except ValueError:
+            key = f"{lp.symbol}_{lp.expiry}"
+        ledger_map[key] = lp
+
+    matched = []
+    kite_only = []
+    ledger_only = []
+
+    for key, kp in kite_map.items():
+        if key in ledger_map:
+            lp = ledger_map[key]
+            kite_qty = kp.quantity
+            ledger_qty = lp.lots * lp.lot_size
+            matched.append({
+                "kite": kp,
+                "ledger": lp,
+                "qty_match": kite_qty == ledger_qty,
+                "qty_diff": kite_qty - ledger_qty,
+                "kite_qty": kite_qty,
+                "ledger_qty": ledger_qty,
+            })
+        else:
+            kite_only.append(kp)
+
+    for key, lp in ledger_map.items():
+        if key not in kite_map:
+            ledger_only.append(lp)
+
+    parts = [f"Matched: {len(matched)}"]
+    mismatched = [m for m in matched if not m["qty_match"]]
+    if mismatched:
+        parts.append(f"Quantity mismatches: {len(mismatched)}")
+    if kite_only:
+        parts.append(f"Kite-only (untracked): {len(kite_only)}")
+    if ledger_only:
+        parts.append(f"Ledger-only (stale): {len(ledger_only)}")
+    if not mismatched and not kite_only and not ledger_only:
+        parts.append("All positions in sync")
+
+    return {
+        "matched": matched,
+        "kite_only": kite_only,
+        "ledger_only": ledger_only,
+        "summary": " | ".join(parts),
+    }

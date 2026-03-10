@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime
 
+from diamond_options.data.futures_chain import FuturesChain, FuturesQuote
 from diamond_options.data.options_chain import OptionQuote, OptionsChain
 
 logger = logging.getLogger(__name__)
@@ -353,3 +354,161 @@ def get_expiry_from_kite(instrument_data: dict) -> date | None:
         except ValueError:
             pass
     return None
+
+
+# --- Futures symbol parsing and chain building ---
+
+
+def parse_futures_symbol(tradingsymbol: str) -> dict | None:
+    """Parse a Kite futures tradingsymbol into components.
+
+    Examples:
+        NIFTY26MARFUT → {symbol: NIFTY, year: 2026, month: 3, instrument: FUT}
+        NIFTY26MAR26FUT → same format (some brokers use YYMMMDD)
+        RELIANCE26MARFUT → {symbol: RELIANCE, year: 2026, month: 3, instrument: FUT}
+        NIFTY2632624500CE → returns None (this is an option, not a futures)
+
+    Args:
+        tradingsymbol: Raw Kite tradingsymbol.
+
+    Returns:
+        Dict with symbol, year, month, instrument fields, or None if not futures.
+    """
+    # Exclude options (end in CE/PE)
+    if tradingsymbol.endswith("CE") or tradingsymbol.endswith("PE"):
+        return None
+
+    # Standard format: SYMBOL + YY + MMM + FUT
+    # e.g., NIFTY26MARFUT, RELIANCE26APRFUT
+    m = re.match(
+        r"^([A-Z&]+)(\d{2})([A-Z]{3})FUT$",
+        tradingsymbol,
+    )
+    if m:
+        symbol = m.group(1)
+        year = 2000 + int(m.group(2))
+        month_str = m.group(3)
+        months = {
+            "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+            "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+        }
+        month = months.get(month_str)
+        if month is None:
+            return None
+        return {
+            "symbol": symbol,
+            "year": year,
+            "month": month,
+            "instrument": "FUT",
+        }
+
+    return None
+
+
+def kite_quote_to_futures_quote(
+    kite_key: str,
+    kite_quote: dict,
+    expiry: date,
+    spot_price: float,
+    lot_size: int = 0,
+) -> FuturesQuote | None:
+    """Convert a Kite quote dict to a FuturesQuote.
+
+    Args:
+        kite_key: Kite instrument key (e.g., "NFO:NIFTY26MARFUT").
+        kite_quote: Kite quote response dict.
+        expiry: Expiry date for this contract.
+        spot_price: Current spot price of the underlying.
+        lot_size: Lot size (0 to auto-lookup).
+
+    Returns:
+        FuturesQuote or None if parsing fails.
+    """
+    tradingsymbol = kite_key.split(":")[-1] if ":" in kite_key else kite_key
+    parsed = parse_futures_symbol(tradingsymbol)
+    if not parsed:
+        return None
+
+    ohlc = kite_quote.get("ohlc", {})
+    prev_close = ohlc.get("close", 0)
+    last_price = kite_quote.get("last_price", 0)
+    change = last_price - prev_close if prev_close > 0 else 0
+    change_pct = (change / prev_close * 100) if prev_close > 0 else 0
+
+    return FuturesQuote(
+        symbol=parsed["symbol"],
+        expiry=expiry,
+        last_price=last_price,
+        spot_price=spot_price,
+        lot_size=lot_size,
+        open_interest=kite_quote.get("oi", 0),
+        oi_change=kite_quote.get("oi_day_change", 0),
+        volume=kite_quote.get("volume", 0),
+        bid=kite_quote.get("depth", {}).get("buy", [{}])[0].get("price", 0)
+        if kite_quote.get("depth")
+        else 0,
+        ask=kite_quote.get("depth", {}).get("sell", [{}])[0].get("price", 0)
+        if kite_quote.get("depth")
+        else 0,
+        open=ohlc.get("open", 0),
+        high=ohlc.get("high", 0),
+        low=ohlc.get("low", 0),
+        prev_close=prev_close,
+        change=round(change, 2),
+        change_pct=round(change_pct, 2),
+    )
+
+
+def build_futures_chain_from_kite(
+    symbol: str,
+    spot: float,
+    kite_quotes: dict[str, dict],
+    expiry_map: dict[str, date],
+    lot_size: int = 0,
+) -> FuturesChain | None:
+    """Build a FuturesChain from Kite quote responses.
+
+    Args:
+        symbol: Underlying symbol (e.g., "NIFTY").
+        spot: Current spot price.
+        kite_quotes: Dict of {kite_key: kite_quote_dict} from get_quotes.
+        expiry_map: Dict of {kite_key: expiry_date} mapping each key to its expiry.
+        lot_size: Lot size for all contracts.
+
+    Returns:
+        FuturesChain with near/next/far month, or None if no valid quotes.
+    """
+    quotes: list[FuturesQuote] = []
+
+    for kite_key, quote_data in kite_quotes.items():
+        expiry = expiry_map.get(kite_key)
+        if expiry is None:
+            continue
+        fq = kite_quote_to_futures_quote(kite_key, quote_data, expiry, spot, lot_size)
+        if fq is not None:
+            quotes.append(fq)
+
+    if not quotes:
+        return None
+
+    # Sort by expiry
+    quotes.sort(key=lambda q: q.expiry)
+
+    near = quotes[0]
+    next_m = quotes[1] if len(quotes) > 1 else None
+    far = quotes[2] if len(quotes) > 2 else None
+
+    ts = ""
+    for _, qd in kite_quotes.items():
+        ts = qd.get("timestamp", "")
+        if ts:
+            break
+
+    return FuturesChain(
+        symbol=symbol,
+        spot=spot,
+        near_month=near,
+        next_month=next_m,
+        far_month=far,
+        timestamp=ts,
+    )

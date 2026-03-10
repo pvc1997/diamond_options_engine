@@ -16,6 +16,7 @@ from diamond_options.utils.indian_markets import NSE_HOLIDAYS_2026
 EVENT_TYPES = {
     "rbi_policy", "earnings", "budget", "expiry", "holiday",
     "economic_data", "global", "other",
+    "futures_expiry", "rollover_window", "delivery_margin", "quarterly_rollover",
 }
 IMPACT_LEVELS = {"high", "medium", "low"}
 
@@ -226,6 +227,63 @@ def _build_events_2026() -> list[MarketEvent]:
             affected_symbols=list(_ALL_SYMBOLS),
         ))
 
+    # --- Futures-specific events ---
+    from diamond_options.data.expiry import monthly_expiry
+
+    _ALL_FUTURES = ["ALL_FUTURES"]
+    _ALL_STOCK_FUTURES = ["ALL_STOCK_FUTURES"]
+    _QUARTERLY_MONTHS = {3, 6, 9, 12}
+
+    for month in range(1, 13):
+        exp_date = monthly_expiry(2026, month)
+        month_name = date(2026, month, 1).strftime("%B")
+        is_quarterly = month in _QUARTERLY_MONTHS
+
+        # Monthly futures expiry
+        events.append(MarketEvent(
+            date=exp_date,
+            event_type="futures_expiry",
+            title=f"Futures Expiry — {month_name} 2026",
+            description=f"All {month_name} futures contracts expire. Index futures cash-settled, stock futures physically settled.",
+            impact="high" if is_quarterly else "medium",
+            affected_symbols=list(_ALL_FUTURES),
+        ))
+
+        # Rollover window: 7 days before expiry
+        rollover_start = exp_date - timedelta(days=7)
+        events.append(MarketEvent(
+            date=rollover_start,
+            event_type="rollover_window",
+            title=f"Futures Rollover Window — {month_name} 2026",
+            description=f"Rollover window opens for {month_name} futures. Consider rolling positions to next month. Calendar spreads may widen.",
+            impact="medium",
+            affected_symbols=list(_ALL_FUTURES),
+        ))
+
+        # Delivery margin: 4 days before expiry (stock futures only)
+        delivery_date = exp_date - timedelta(days=4)
+        events.append(MarketEvent(
+            date=delivery_date,
+            event_type="delivery_margin",
+            title=f"Stock Futures Delivery Margin — {month_name} 2026",
+            description=f"Physical delivery margin increases to 40-50% for stock futures. Close or roll stock futures to avoid elevated margin.",
+            impact="high",
+            affected_symbols=list(_ALL_STOCK_FUTURES),
+        ))
+
+        # Quarterly rollover (heavy volume)
+        if is_quarterly:
+            qr_date = exp_date - timedelta(days=10)
+            quarter_label = {3: "Q4 FY26", 6: "Q1 FY27", 9: "Q2 FY27", 12: "Q3 FY27"}
+            events.append(MarketEvent(
+                date=qr_date,
+                event_type="quarterly_rollover",
+                title=f"Quarterly Rollover — {quarter_label.get(month, month_name)} Begins",
+                description=f"Quarterly futures rollover season. Heavy volume expected. Calendar spreads widen. Roll 3-5 days early for better fills.",
+                impact="high",
+                affected_symbols=list(_ALL_FUTURES),
+            ))
+
     return sorted(events, key=lambda e: e.date)
 
 
@@ -416,3 +474,70 @@ def get_earnings_calendar(symbol: str = "") -> list[MarketEvent]:
         ]
 
     return earnings_events
+
+
+# ---------------------------------------------------------------------------
+# Futures-specific event queries
+# ---------------------------------------------------------------------------
+
+_FUTURES_EVENT_TYPES = {
+    "futures_expiry", "rollover_window", "delivery_margin", "quarterly_rollover",
+}
+
+
+def get_futures_events(
+    from_date: Optional[date] = None,
+    days_ahead: int = 30,
+) -> list[MarketEvent]:
+    """Return futures-specific events in the next N days.
+
+    Args:
+        from_date: Starting date (default: today).
+        days_ahead: Number of days to look ahead.
+
+    Returns:
+        List of futures-related MarketEvent sorted by date.
+    """
+    return get_upcoming_events(
+        from_date=from_date,
+        days_ahead=days_ahead,
+        event_types=list(_FUTURES_EVENT_TYPES),
+    )
+
+
+def is_rollover_window(from_date: Optional[date] = None) -> bool:
+    """Check if the given date falls within a futures rollover window.
+
+    Args:
+        from_date: Date to check (default: today).
+
+    Returns:
+        True if a rollover_window event is active on this date.
+    """
+    if from_date is None:
+        from_date = date.today()
+    # Check if any rollover event covers this date (rollover lasts ~7 days)
+    for e in _EVENTS_2026:
+        if e.event_type == "rollover_window" and e.date <= from_date:
+            # Rollover window is 7 days (from event date to expiry)
+            window_end = e.date + timedelta(days=7)
+            if from_date <= window_end:
+                return True
+    return False
+
+
+def days_to_futures_expiry(from_date: Optional[date] = None) -> int:
+    """Return days until the next monthly futures expiry.
+
+    Args:
+        from_date: Starting date (default: today).
+
+    Returns:
+        Number of calendar days to the next futures expiry.
+    """
+    if from_date is None:
+        from_date = date.today()
+    for e in _EVENTS_2026:
+        if e.event_type == "futures_expiry" and e.date >= from_date:
+            return (e.date - from_date).days
+    return 30  # Default fallback
