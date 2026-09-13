@@ -6,6 +6,7 @@ Reads directly from SQLite to avoid dependency coupling.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,11 +55,18 @@ def _find_stock_engine_db(strategy: str) -> Path | None:
     Checks standard locations used by diamond_stock_engine.
     """
     home = Path.home()
-    candidates = [
+    rel = Path("data") / "ledgers" / f"{strategy}.db"
+    candidates: list[Path] = []
+    # Explicit override via environment variable (path to the stock engine repo root)
+    env_root = os.environ.get("DIAMOND_STOCK_ENGINE_DIR")
+    if env_root:
+        candidates.append(Path(env_root).expanduser() / rel)
+    candidates += [
+        # Sibling checkout next to this repo (default layout)
+        Path(__file__).resolve().parents[3].parent / "diamond_stock_engine" / rel,
+        Path.cwd().parent / "diamond_stock_engine" / rel,
         home / ".diamond" / "ledgers" / f"{strategy}.db",
         home / ".diamond_stock" / "ledgers" / f"{strategy}.db",
-        home / "Desktop" / "FundsIndia" / "Projects" / "diamond_stock_engine" / "data" / "ledgers" / f"{strategy}.db",
-        Path.cwd().parent / "diamond_stock_engine" / "data" / "ledgers" / f"{strategy}.db",
     ]
     for path in candidates:
         if path.exists():
