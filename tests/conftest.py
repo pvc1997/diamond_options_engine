@@ -66,3 +66,13 @@ def tmp_db_path() -> Path:
     """Temporary database path for ledger tests."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir) / "test_ledger.db"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_project_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the engine's data/reports directories at a temp dir.
+
+    Without this, tests that use default ledger/order-book paths write real
+    SQLite files into the repo's data/ directory.
+    """
+    monkeypatch.setattr("diamond_options.config.PROJECT_ROOT", tmp_path)
